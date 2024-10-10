@@ -1,5 +1,4 @@
 from typing import Dict, List, Set, Tuple
-import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import InputExample, SentenceTransformer, losses, evaluation, util
@@ -7,7 +6,6 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import DataLoader
 from pathlib import Path
-from nltk.tokenize import sent_tokenize
 
 
 def match_chunks_with_summaries_pieces(chunked_dialogues: pd.DataFrame, summary_pieces: pd.DataFrame, model: SentenceTransformer) -> pd.DataFrame:
@@ -123,9 +121,6 @@ def match_chunks_with_summaries_pieces(chunked_dialogues: pd.DataFrame, summary_
     return pd.DataFrame(matched_data)
         
 
-
-
-
 def split_dialogue_into_chunks(dialogue:str, model:SentenceTransformer, chunk_size:int=32, overlap:int=0) -> list:
     tokens = model.tokenizer.tokenize(dialogue, truncation=False)
     chunks = []
@@ -161,15 +156,12 @@ def split_dialogue_into_chunks(dialogue:str, model:SentenceTransformer, chunk_si
     return chunks
 
 
-
 def chunk_dialog(dialogues: pd.DataFrame, model: SentenceTransformer) -> pd.DataFrame:
     chunked_dialogues = []
     for i, row in dialogues.iterrows():
         dialogue_id = row['id']
         dialogue_text = row['dialogue']
-        # Split the dialogue into chunks
         chunks = split_dialogue_into_chunks(dialogue_text, model)
-        # Append each chunk to the new data list with a sub_id
         for i, chunk in enumerate(chunks):
             chunked_dialogues.append({'id': dialogue_id, 'sub_id': i, 'chunk': chunk})
     return pd.DataFrame(chunked_dialogues)
@@ -216,13 +208,8 @@ def train(dialogues_path:Path, summary_pieces_path:Path):
     dialogues = pd.read_csv(dialogues_path)
     summary_pieces = pd.read_csv(summary_pieces_path)
 
-    # Load the model
     model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
-
-    # Split the dialogues into chunks if they are too long
     chunked_dialogues = chunk_dialog(dialogues, model)
-
-    # match the chunks with the summary pieces, use cosine similarity
     conv_chunk_with_summary_piece_match = match_chunks_with_summaries_pieces(chunked_dialogues, summary_pieces, model)
     
 
@@ -233,12 +220,9 @@ def train(dialogues_path:Path, summary_pieces_path:Path):
     
 
     train_examples = prepare_input_data(train_df)
-    # val_examples = prepare_input_data(val_df)
 
     train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=64)
-
     train_loss = losses.MultipleNegativesRankingLoss(model)
-
     corpus, queries, relevant_docs = prepare_data_for_evaluation(val_df)
     ir_evaluator = evaluation.InformationRetrievalEvaluator(
         queries, corpus, relevant_docs,
@@ -271,41 +255,29 @@ def train(dialogues_path:Path, summary_pieces_path:Path):
 
 
 def match_summary_pieces(dialogues_df: pd.DataFrame, summary_pieces_df: pd.DataFrame) -> pd.DataFrame:
-    # Load the model from the saved path
     model = SentenceTransformer('trained_model')
-
-    # Split the dialogues into chunks if they are too long
     chunked_dialogues = chunk_dialog(dialogues_df, model)
 
-    # Encode conversation chunks
     conversation_chunks = chunked_dialogues['chunk'].tolist()
     conversation_embeddings = model.encode(conversation_chunks, convert_to_tensor=True) # (num_chunks, embedding_dim)
 
-    # Encode summary pieces
     summary_pieces = summary_pieces_df['summary_piece'].tolist()
     summary_embeddings = model.encode(summary_pieces, convert_to_tensor=True) # (num_summary_pieces, embedding_dim)
 
-    # Compute cosine similarity between conversation chunks and summary pieces
     similarity_matrix = util.cos_sim(summary_embeddings, conversation_embeddings) # (num_summary_pieces, num_chunks)
 
-    # For each summary piece, find the index of the most similar conversation chunk
     max_similarities, matched_indices = torch.max(similarity_matrix, dim=1)
 
-    # Convert indices and similarities to NumPy arrays
     matched_indices = matched_indices.cpu().numpy()
     max_similarities = max_similarities.cpu().numpy()
 
-    # Create a DataFrame to map summary pieces to conversation chunks
     df_mapping = pd.DataFrame({
         'summary_piece': summary_pieces_df['summary_piece'],
         'matched_chunk_index': matched_indices,
         'similarity': max_similarities
     })
 
-    # Reset index to align with 'matched_chunk_index'
     chunked_dialogues = chunked_dialogues.reset_index()
-
-    # Merge to get 'dialog_id' and 'sub_id' from conversation DataFrame
     df_mapping = df_mapping.merge(
         chunked_dialogues[['index', 'id', 'sub_id']],
         left_on='matched_chunk_index',
@@ -314,8 +286,6 @@ def match_summary_pieces(dialogues_df: pd.DataFrame, summary_pieces_df: pd.DataF
     )
 
     df_mapping.rename(columns={'id': 'dialog_id'}, inplace=True)
-
-    # Sort by 'dialog_id' and 'sub_id' to order chronologically
     df_mapping.sort_values(by=['dialog_id', 'sub_id'], inplace=True)
 
     # Identify dialog_ids with duplicate sub_id's
@@ -327,19 +297,14 @@ def match_summary_pieces(dialogues_df: pd.DataFrame, summary_pieces_df: pd.DataF
     grouped = df_mapping.groupby('dialog_id')
 
     for dialog_id, group in grouped:
-        if dialog_id not in duplicate_dialog_ids:
-            # No duplicates, assign position_index directly
+        if dialog_id not in duplicate_dialog_ids:   # No duplicates, assign position_index directly
             group = group.copy()
             group['position_index'] = range(0, len(group))
             results.append(group)
         
-        else:
-            # Duplicates exist, need to split conversation chunks into sentences
+        else:   # Duplicates exist, need to split conversation chunks into sentences
             group = group.copy()
-            # Get conversation chunks for this dialog_id
             dialogue = dialogues_df[dialogues_df['id'] == dialog_id]
-
-            # Split each dialogue into 24 tokens each chunk
             sentences = split_dialogue_into_chunks(dialogue.values[0], model, chunk_size=24, overlap=0)
 
             sentence_embeddings = model.encode(sentences, convert_to_tensor=True) # (num_sentences, embedding_dim)
@@ -347,20 +312,13 @@ def match_summary_pieces(dialogues_df: pd.DataFrame, summary_pieces_df: pd.DataF
             summary_pieces_group = group['summary_piece'].tolist()  # (num_summary_pieces)
             summary_embeddings_group = model.encode(summary_pieces_group, convert_to_tensor=True) # (num_summary_pieces, embedding_dim)
 
-            # Compute cosine similarity between sentences and summary pieces
             similarity_matrix = util.cos_sim(summary_embeddings_group, sentence_embeddings) # (num_summary_pieces, num_sentences)
 
-            # For each summary piece, find the index of the most similar sentence
             max_similarities, matched_sentence_indices  = torch.max(similarity_matrix, dim=1)
             matched_positions = matched_sentence_indices.cpu().numpy()
 
-            # Add the matched sentence indices to the group
             group['matched_sentence_index'] = matched_positions
-
-            # Sort the group by 'sentence_sub_id' and 'matched_sentence_index' to order chronologically
             group.sort_values(by=['matched_sentence_index'], inplace=True)
-
-            # Assign position_index within this group
             group['position_index'] = range(0, len(group))
             results.append(group)
 

@@ -15,7 +15,7 @@ This project aims to solve the problem of attributing summary pieces to their co
    - Split conversations into smaller chunks to create more concise vector representations, improving alignment accuracy.
 3. **Ordering Summaries**:
    - Checked the alignment of summary pieces with conversation chunks.
-   - If overlaps occurred, further split the conversation into sentences to achieve more accurate ordering.
+   - If overlaps occurred, further split the conversation into smaller chunkes to achieve more accurate ordering.
 
 ## Results
 The approach successfully attributed each summary piece to the correct conversation chunk and maintained the chronological order of summaries, providing a coherent summary of the dialogs.
